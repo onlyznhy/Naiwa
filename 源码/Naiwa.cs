@@ -6,10 +6,12 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Media;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -137,6 +139,64 @@ namespace NaiwaDesktop
         public void Dispose(){if(eyes!=null)foreach(Bitmap b in eyes)if(b!=null)b.Dispose();if(blinks!=null)foreach(Bitmap[] bank in blinks)foreach(Bitmap b in bank)if(b!=null)b.Dispose();foreach(Bitmap b in cache.Values)b.Dispose();cache.Clear();}
     }
 
+    internal sealed class Emote:IDisposable
+    {
+        internal readonly string Name;
+        internal readonly int Width,Height,FrameCount;
+        internal readonly double Duration;
+        private readonly Bitmap[] frames;
+        internal Emote(string name,string path)
+        {
+            Name=name;
+            using(Image image=Image.FromFile(path))
+            {
+                Guid[] dimensions=image.FrameDimensionsList;
+                if(dimensions==null||dimensions.Length==0)throw new InvalidDataException("表情动画缺少帧信息："+name);
+                FrameDimension dimension=new FrameDimension(dimensions[0]);
+                FrameCount=image.GetFrameCount(dimension);
+                if(FrameCount<1||FrameCount>120)throw new InvalidDataException("表情动画帧数无效："+name);
+                Width=image.Width;Height=image.Height;frames=new Bitmap[FrameCount];
+                for(int i=0;i<FrameCount;i++)
+                {
+                    image.SelectActiveFrame(dimension,i);Bitmap frame=new Bitmap(Width,Height,PixelFormat.Format32bppPArgb);
+                    using(Graphics g=Graphics.FromImage(frame)){g.CompositingMode=CompositingMode.SourceCopy;g.DrawImageUnscaled(image,0,0);}frames[i]=frame;
+                }
+            }
+            Duration=12;
+        }
+        internal Emote(string name,string folder,bool sequence)
+        {
+            Name=name;
+            string[] paths=Directory.GetFiles(folder,"*.png");Array.Sort(paths,StringComparer.Ordinal);
+            if(paths.Length<2||paths.Length>120)throw new InvalidDataException("表情帧序列无效："+name);
+            List<Bitmap> source=new List<Bitmap>();
+            try
+            {
+                foreach(string path in paths)using(Image image=Image.FromFile(path))
+                {
+                    Bitmap frame=new Bitmap(image.Width,image.Height,PixelFormat.Format32bppPArgb);
+                    using(Graphics g=Graphics.FromImage(frame)){g.CompositingMode=CompositingMode.SourceCopy;g.DrawImageUnscaled(image,0,0);}source.Add(frame);
+                }
+                FrameCount=source.Count;Width=source.Max(delegate(Bitmap b){return b.Width;});Height=source.Max(delegate(Bitmap b){return b.Height;});frames=new Bitmap[FrameCount];
+                for(int i=0;i<FrameCount;i++)
+                {
+                    Bitmap canvas=new Bitmap(Width,Height,PixelFormat.Format32bppPArgb);
+                    using(Graphics g=Graphics.FromImage(canvas)){g.CompositingMode=CompositingMode.SourceCopy;g.Clear(Color.Transparent);g.DrawImageUnscaled(source[i],(Width-source[i].Width)/2,Height-source[i].Height);}frames[i]=canvas;
+                }
+            }
+            finally{foreach(Bitmap frame in source)frame.Dispose();}
+            Duration=5;
+        }
+        internal Bitmap Frame(int index){return frames[Math.Max(0,Math.Min(FrameCount-1,index))];}
+        internal int FrameAt(double elapsed)
+        {
+            if(FrameCount<2)return 0;
+            double moving=Math.Max(.1,Duration-2),time=elapsed%Duration;
+            return time>=moving?FrameCount-1:Math.Min(FrameCount-1,(int)(time/moving*FrameCount));
+        }
+        public void Dispose(){if(frames!=null)foreach(Bitmap frame in frames)if(frame!=null)frame.Dispose();}
+    }
+
     internal sealed class Motion
     {
         private const double PokeDuration=.95;
@@ -243,7 +303,7 @@ namespace NaiwaDesktop
             Settings s=new Settings();try{
                 string file=Path.Combine(Folder,"settings.ini");if(!File.Exists(file))return s;
                 foreach(string line in File.ReadAllLines(file)){string[] p=line.Split('=');int n;if(p.Length!=2)continue;
-                    if(p[0]=="scale"&&int.TryParse(p[1],out n))s.Scale=Math.Max(50,Math.Min(150,n));
+                    if(p[0]=="scale"&&int.TryParse(p[1],out n))s.Scale=Math.Max(50,Math.Min(700,n));
                     if(p[0]=="x"&&int.TryParse(p[1],out n)){s.X=n;s.Position=true;}
                     if(p[0]=="y"&&int.TryParse(p[1],out n))s.Y=n;
                     if(p[0]=="sound")s.Sound=p[1]=="True";
@@ -350,6 +410,57 @@ namespace NaiwaDesktop
         }
     }
 
+    // A click-through transparent window used only while a full-screen pet effect is active.
+    internal sealed class EffectWindow:Form
+    {
+        private readonly LayeredSurface surface=new LayeredSurface();
+        private readonly Point target;
+        private readonly int initialY;
+        private readonly double startAt,duration;
+        internal readonly bool SmallForeground;
+        private Bitmap image;
+        internal EffectWindow(Bitmap picture,Point location,int startY,double startTime,int fallDuration,bool smallForeground)
+        {
+            image=picture;SmallForeground=smallForeground;Text=Native.Title+".effect";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=false;
+            target=location;initialY=startY;startAt=startTime;duration=fallDuration/1000.0;StartPosition=FormStartPosition.Manual;AutoScaleMode=AutoScaleMode.None;ClientSize=image.Size;Location=new Point(location.X,startY);TopMost=true;
+            Shown+=delegate{surface.Update(Handle,image,Location);image.Dispose();image=null;};
+        }
+        internal bool Advance(double now)
+        {
+            if(now<startAt)return false;
+            int y=FallY(initialY,target.Y,now-startAt,duration);
+            // The layered bitmap was uploaded once when shown. Moving its HWND avoids copying
+            // hundreds of thousands of pixels for every pet on every animation frame.
+            if(Top!=y)Location=new Point(target.X,y);
+            return now-startAt>=duration;
+        }
+        internal int TargetY{get{return target.Y;}}
+        internal int CenterY{get{return target.Y+Height/2;}}
+        internal bool ReachedTarget{get{return Top==target.Y;}}
+        internal static int FallY(int initialY,int targetY,double elapsed,double duration)
+        {
+            float progress=(float)Math.Max(0,Math.Min(1,elapsed/duration));
+            if(progress<.84f)
+            {
+                float falling=progress/.84f;return (int)Math.Round(initialY+(targetY-initialY)*falling*falling);
+            }
+            float rebound=(progress-.84f)/.16f;
+            return (int)Math.Round(targetY-Math.Sin(rebound*Math.PI)*(1-rebound)*Math.Min(52,Math.Abs(targetY-initialY)*.07));
+        }
+        protected override bool ShowWithoutActivation{get{return true;}}
+        protected override CreateParams CreateParams{get{CreateParams p=base.CreateParams;p.ExStyle|=0x80000|0x80|0x08000000|0x20;p.ClassStyle|=8;return p;}}
+        protected override void Dispose(bool disposing){if(disposing){surface.Dispose();if(image!=null){image.Dispose();image=null;}}base.Dispose(disposing);}
+    }
+
+    internal sealed class EffectSpec
+    {
+        internal string Name;internal float Angle;internal int Height,CenterX,CenterY,StartOffset,Delay,Duration;
+    }
+    internal sealed class PreparedEffect
+    {
+        internal EffectSpec Spec;internal Bitmap Picture;
+    }
+
     internal sealed class PetWindow:Form
     {
         private readonly Assets assets;
@@ -364,15 +475,40 @@ namespace NaiwaDesktop
         private readonly Icon petIcon;
         private readonly ContextMenuStrip menu;
         private readonly NotifyIcon tray;
-        private ToolStripMenuItem soundItem,topItem,stopItem,fullscreenItem;
+        private ToolStripMenuItem soundItem,topItem,stopItem,fullscreenItem,holdEmoteItem,stopEmoteItem,stopEffectItem;
+        private readonly Dictionary<string,Emote> emotes=new Dictionary<string,Emote>();
+        private readonly Dictionary<string,Bitmap> effectSources=new Dictionary<string,Bitmap>();
+        private Emote activeEmote;
+        private double emoteStart;
+        private bool holdEmote;
+        private readonly List<EffectWindow> effectWindows=new List<EffectWindow>();
+        private readonly List<EffectWindow> fallingEffects=new List<EffectWindow>();
+        private readonly Queue<EffectSpec> pendingEffects=new Queue<EffectSpec>();
+        private readonly Queue<PreparedEffect> preparedEffects=new Queue<PreparedEffect>();
+        private readonly object effectQueueLock=new object();
+        private Task effectRenderTask;
+        private int effectGeneration,effectOutstanding;
+        private bool screenEffectActive;
+        private Rectangle effectArea;
+        private int scaleBeforeEffect;
+        private Point locationBeforeEffect;
+        private bool topBeforeEffect;
         private Point dragWindow,lastDragPointer;
         private readonly FullscreenGate fullscreenGate=new FullscreenGate();
-        private double nextFullscreenCheck;
+        private double nextFullscreenCheck,nextEffectFrame;
         private string lastVisual="";
-        private bool disposing,menuOpen,ready;
+        private bool disposing,menuOpen,ready,effectSettled;
         internal bool HiddenForFullscreen{get;private set;}
         internal int ScalePercent{get{return settings.Scale;}}
         internal bool SoundEnabled{get{return settings.Sound;}}
+        internal int EffectCount{get{return effectWindows.Count;}}
+        internal int PendingEffectCount{get{return Interlocked.CompareExchange(ref effectOutstanding,0,0);}}
+        internal bool EffectComplete{get{return screenEffectActive&&PendingEffectCount==0&&fallingEffects.Count==0&&effectWindows.Count>=90&&effectWindows.All(e=>e.ReachedTarget);}}
+        internal bool EffectSettled{get{return effectSettled;}}
+        internal bool EffectWindowsTopMost{get{return effectWindows.Any(e=>e.TopMost);}}
+        internal bool EffectBottomFirst{get{return effectWindows.Count>=90&&effectWindows[0].CenterY>effectWindows[effectWindows.Count-1].CenterY&&effectWindows.Zip(effectWindows.Skip(1),(a,b)=>a.CenterY>=b.CenterY).All(v=>v);}}
+        internal double EffectPictureMs,EffectShowMs,EffectMoveMs;
+        internal double EffectMaxShowMs,EffectMaxMoveMs;
         private double Now{get{return watch.Elapsed.TotalSeconds;}}
 
         internal PetWindow(Assets a,bool test)
@@ -386,6 +522,7 @@ namespace NaiwaDesktop
             petIcon=Renderer.CreateIcon(assets.Eye(0));
             Icon=petIcon;
             if(File.Exists(assets.AudioPath)){sound=new SoundPlayer(assets.AudioPath);sound.Load();}
+            LoadEmotes(AppDomain.CurrentDomain.BaseDirectory);
             menu=BuildMenu();
             if(!testing){tray=new NotifyIcon{Icon=petIcon,Text="奶蛙 · 戳肚子 / 双击笑 / 拖动",ContextMenuStrip=menu,Visible=true};tray.DoubleClick+=delegate{ReturnHome();};}
             timer.Interval=16;timer.Tick+=delegate{Tick();};
@@ -415,8 +552,21 @@ namespace NaiwaDesktop
             soundItem=new ToolStripMenuItem("原版笑声",null,delegate{SetSound(!settings.Sound);});result.Items.Add(soundItem);
             result.Items.Add(new ToolStripSeparator());
             ToolStripMenuItem sizes=new ToolStripMenuItem("大小");
-            int[] values={65,85,110};string[] labels={"小号","标准","大号"};
+            int[] values={65,85,110,150,200,300,600,700};string[] labels={"小号","标准","大号","大号 Pro","大号 Max","大号 Pro Max","大杯（600%）","超大杯（700%）"};
             for(int i=0;i<values.Length;i++){int v=values[i];ToolStripMenuItem entry=new ToolStripMenuItem(labels[i],null,delegate{SetSize(v);});entry.Tag=v;sizes.DropDownItems.Add(entry);}result.Items.Add(sizes);
+            if(emotes.ContainsKey("heart"))result.Items.Add("比心",null,delegate{PlayEmote("heart");});
+            if(emotes.ContainsKey("emo_idle"))result.Items.Add("EMO（发呆）",null,delegate{PlayEmote("emo_idle");});
+            if(emotes.ContainsKey("emo_wipe"))result.Items.Add("EMO（擦眼）",null,delegate{PlayEmote("emo_wipe");});
+            if(emotes.ContainsKey("smoke"))result.Items.Add("靠墙抽烟",null,delegate{PlayEmote("smoke");});
+            if(emotes.ContainsKey("umbrella"))result.Items.Add("雨天撑伞",null,delegate{PlayEmote("umbrella");});
+            if(emotes.ContainsKey("coffee"))result.Items.Add("喝咖啡发呆",null,delegate{PlayEmote("coffee");});
+            if(emotes.ContainsKey("sad"))result.Items.Add("抱膝低落",null,delegate{PlayEmote("sad");});
+            holdEmoteItem=new ToolStripMenuItem("停留当前动作",null,delegate{holdEmote=!holdEmote;UpdateMenu();});result.Items.Add(holdEmoteItem);
+            stopEmoteItem=new ToolStripMenuItem("结束表情动作",null,delegate{holdEmote=false;StopEmote(true);UpdateMenu();});result.Items.Add(stopEmoteItem);
+            result.Items.Add(new ToolStripSeparator());
+            result.Items.Add("满屏：同一动作旋转铺满",null,delegate{StartScreenEffect(false);});
+            result.Items.Add("满屏：不同动作旋转铺满",null,delegate{StartScreenEffect(true);});
+            stopEffectItem=new ToolStripMenuItem("关闭满屏效果",null,delegate{StopScreenEffect();});result.Items.Add(stopEffectItem);
             topItem=new ToolStripMenuItem("总在最上面",null,delegate{TopMost=!TopMost;settings.OnTop=TopMost;Save();UpdateMenu();});result.Items.Add(topItem);
             fullscreenItem=new ToolStripMenuItem("全屏时自动隐藏",null,delegate{SetAutoHide(!settings.AutoHide);});result.Items.Add(fullscreenItem);
             result.Items.Add("回到屏幕右下角",null,delegate{ReturnHome();});
@@ -426,7 +576,7 @@ namespace NaiwaDesktop
         }
         private void UpdateMenu()
         {
-            if(menu==null)return;SetToggleMark(soundItem,settings.Sound);soundItem.Enabled=sound!=null;SetToggleMark(topItem,TopMost);stopItem.Enabled=Motion.Playing||Motion.Resting;SetToggleMark(fullscreenItem,settings.AutoHide);
+            if(menu==null)return;SetToggleMark(soundItem,settings.Sound);soundItem.Enabled=sound!=null;SetToggleMark(topItem,TopMost);stopItem.Enabled=Motion.Playing||Motion.Resting;SetToggleMark(fullscreenItem,settings.AutoHide);holdEmoteItem.Enabled=activeEmote!=null;stopEmoteItem.Enabled=activeEmote!=null;stopEffectItem.Enabled=effectWindows.Count>0;SetToggleMark(holdEmoteItem,holdEmote);
             foreach(ToolStripItem entry in menu.Items){ToolStripMenuItem p=entry as ToolStripMenuItem;if(p==null)continue;foreach(ToolStripItem child in p.DropDownItems){ToolStripMenuItem c=child as ToolStripMenuItem;if(c!=null&&c.Tag is int)c.Checked=(int)c.Tag==settings.Scale;}}
         }
         private static void SetToggleMark(ToolStripMenuItem item,bool selected)
@@ -445,6 +595,7 @@ namespace NaiwaDesktop
         internal bool Laugh()
         {
             if(HiddenForFullscreen)return false;
+            StopEmote(false);
             if(!Motion.Laugh(Now))return false;
             if(sound!=null&&settings.Sound&&!testing)sound.Play();RenderNow(true);return true;
         }
@@ -455,7 +606,16 @@ namespace NaiwaDesktop
         {
             if(Now>=nextFullscreenCheck){nextFullscreenCheck=Now+.12;CheckFullscreenWindow(foreground,false);}
             if(HiddenForFullscreen)return;
+            if(screenEffectActive)
+            {
+                // Demote on the next tick after the final landing. Other apps can then cover
+                // the collage when clicked, while the control pet stays above its effect windows.
+                if(!effectSettled&&PendingEffectCount==0&&fallingEffects.Count==0&&effectWindows.Count>0)SettleScreenEffect();
+                if(Now>=nextEffectFrame){AdvanceEffects();nextEffectFrame=Now+.025;}
+                if(PendingEffectCount>0)BuildEffectBatch();
+            }
             Point p=PointToClient(Cursor.Position);bool over=!menuOpen&&surface.Hit(p.X,p.Y);
+            if(activeEmote!=null&&!holdEmote&&Now-emoteStart>=activeEmote.Duration)StopEmote(false);
             bool wasPlaying=Motion.Playing;Motion.Update(Now,over,assets.Duration,assets.BlinkCount/assets.BlinkFps);
             if(wasPlaying&&!Motion.Playing&&sound!=null)sound.Stop();
             RenderNow(false);
@@ -463,6 +623,13 @@ namespace NaiwaDesktop
         internal void RenderNow(bool force)
         {
             if(!IsHandleCreated||disposing||HiddenForFullscreen)return;
+            if(activeEmote!=null)
+            {
+                int frame=holdEmote?activeEmote.FrameCount-1:activeEmote.FrameAt(Now-emoteStart);string emoteKey="X"+activeEmote.Name+"/"+frame+"/"+(int)((Now-emoteStart)*30)+"/"+settings.Scale;
+                if(!force&&emoteKey==lastVisual)return;
+                using(Bitmap image=RenderEmote(activeEmote,frame))surface.Update(Handle,image,Location);
+                lastVisual=emoteKey;return;
+            }
             string key=Motion.Resting?"R":Motion.Playing?"L"+(int)(Motion.Elapsed*assets.Fps):Motion.Blinking?"B"+(Motion.Look>.5?1:0)+"/"+(int)((Motion.Clock-Motion.BlinkStart)*assets.BlinkFps):"E"+(int)Math.Round(Motion.Look*(assets.EyeCount-1));
             if(Motion.Poking||Motion.Moving||Motion.Waking)key+="/M"+(int)(Motion.Clock*60);
             key+="/"+settings.Scale;
@@ -501,9 +668,14 @@ namespace NaiwaDesktop
         }
         private void ReturnHome(){Home();if(!testing)CheckFullscreen(true);if(!HiddenForFullscreen){Show();RenderNow(true);}Save();}
         private Size SizeFor(int scale){return new Size(assets.Width*scale/100,assets.Height*scale/100);}
+        private Size SizeFor(Emote emote)
+        {
+            int height=assets.Height*settings.Scale/100;
+            return new Size(Math.Max(1,emote.Width*height/emote.Height),height);
+        }
         internal void SetSize(int scale)
         {
-            int center=Left+Width/2,bottom=Top+Height;settings.Scale=Math.Max(50,Math.Min(150,scale));ClientSize=SizeFor(settings.Scale);
+            int center=Left+Width/2,bottom=Top+Height;settings.Scale=Math.Max(50,Math.Min(700,scale));ClientSize=activeEmote==null?SizeFor(settings.Scale):SizeFor(activeEmote);
             Location=new Point(center-Width/2,bottom-Height);KeepVisible();RenderNow(true);Save();UpdateMenu();
         }
         internal void Home()
@@ -513,8 +685,180 @@ namespace NaiwaDesktop
         }
         internal static Point Clamp(Point p,Size size,Rectangle area,int allowance)
         {return new Point(Math.Max(area.Left,Math.Min(p.X,area.Right-size.Width)),Math.Max(area.Top,Math.Min(p.Y,area.Bottom-size.Height+allowance)));}
-        private void KeepVisible(){Location=Clamp(Location,Size,Screen.FromRectangle(Bounds).WorkingArea,(int)(12*settings.Scale/100.0));}
+        private void KeepVisible()
+        {
+            // Every size may be dragged beyond any edge.  Leave a small visible grip so the pet can always be pulled back.
+            Rectangle area=Screen.FromRectangle(Bounds).Bounds;int grip=Math.Max(18,Math.Min(48,Math.Min(Width,Height)/4));
+            Location=new Point(Math.Max(area.Left-Width+grip,Math.Min(Left,area.Right-grip)),Math.Max(area.Top-Height+grip,Math.Min(Top,area.Bottom-grip)));
+        }
         private void Save(){if(testing)return;settings.X=Left;settings.Y=Top;settings.Save();}
+        private void LoadEmotes(string folder)
+        {
+            string emoteFolder=Path.Combine(folder,"emotes");
+            string[] names={"heart","emo_idle","emo_wipe","smoke","umbrella","coffee","sad"};
+            foreach(string name in names)try{string path=Path.Combine(emoteFolder,name+".gif");if(!File.Exists(path))path=Path.Combine(emoteFolder,name+".png");if(File.Exists(path)){Emote emote=new Emote(name,path);emotes.Add(name,emote);effectSources.Add(name,MakeEffectSource(emote.Frame(0)));}}catch{}
+        }
+        private static Bitmap MakeEffectSource(Bitmap source)
+        {
+            int height=Math.Min(source.Height,600),width=Math.Max(1,(int)Math.Round(source.Width*height/(double)source.Height));
+            Bitmap result=new Bitmap(width,height,PixelFormat.Format32bppPArgb);
+            using(Graphics g=Graphics.FromImage(result)){g.Clear(Color.Transparent);g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.DrawImage(source,new Rectangle(0,0,width,height));}
+            return result;
+        }
+        private void PlayEmote(string name)
+        {
+            Emote emote;if(HiddenForFullscreen||!emotes.TryGetValue(name,out emote))return;
+            if(sound!=null)sound.Stop();Motion.Suspend(Now);activeEmote=emote;emoteStart=Now;
+            int center=Left+Width/2,bottom=Top+Height;ClientSize=SizeFor(emote);Location=new Point(center-Width/2,bottom-Height);KeepVisible();RenderNow(true);
+        }
+        private void StopEmote(bool render)
+        {
+            if(activeEmote==null)return;activeEmote=null;
+            int center=Left+Width/2,bottom=Top+Height;ClientSize=SizeFor(settings.Scale);Location=new Point(center-Width/2,bottom-Height);KeepVisible();
+            if(render)RenderNow(true);
+        }
+        internal void StartScreenEffect(bool mixed)
+        {
+            if(HiddenForFullscreen)return;string currentAction=activeEmote==null?"emo_idle":activeEmote.Name;StopScreenEffect();StopEmote(false);
+            screenEffectActive=true;effectSettled=false;scaleBeforeEffect=settings.Scale;locationBeforeEffect=Location;topBeforeEffect=TopMost;
+            settings.Scale=85;ClientSize=SizeFor(settings.Scale);Home();TopMost=true;RenderNow(true);
+            Rectangle area=Screen.FromPoint(Cursor.Position).Bounds;effectArea=area;
+            string[] choices=mixed?new string[]{"heart","emo_idle","emo_wipe","smoke","umbrella","coffee","sad"}:new string[]{currentAction};
+            // Build only lightweight placement specifications here; image rotation is batched after the first pets begin falling.
+            Random random=new Random(unchecked(Environment.TickCount*397^Guid.NewGuid().GetHashCode()));
+            int columns=8,rows=7,baseCount=columns*rows,extraCount=40;
+            int index=0,count=baseCount+extraCount;
+            for(index=0;index<count;index++)
+            {
+                int centerX,centerY;
+                if(index<baseCount)
+                {
+                    int column=index%columns,row=rows-1-index/columns;
+                    centerX=area.Left+(int)((column+.5)*area.Width/columns+(random.NextDouble()-.5)*area.Width/columns*.72);
+                    centerY=area.Top+(int)((row+.5)*area.Height/rows+(random.NextDouble()-.5)*area.Height/rows*.72);
+                }
+                else
+                {
+                    centerX=area.Left+(int)(random.NextDouble()*area.Width);
+                    centerY=area.Top+(int)(random.NextDouble()*area.Height);
+                }
+                int layer=Math.Max(0,Math.Min(rows,(area.Bottom-centerY)*rows/area.Height));
+                // The grid supplies broad coverage; additional pets provide visibly smaller sizes.
+                // Keep every size band in each run instead of relying on one random range.
+                int minimumHeight,maximumHeight;
+                if(index<baseCount)
+                {
+                    if(index%4==0){minimumHeight=(int)(area.Height*.43);maximumHeight=Math.Min(760,(int)(area.Height*.52));}
+                    else{minimumHeight=(int)(area.Height*.30);maximumHeight=Math.Min(620,(int)(area.Height*.43));}
+                }
+                else if(index<baseCount+16){minimumHeight=(int)(area.Height*.09);maximumHeight=(int)(area.Height*.16);}
+                else if(index<baseCount+32){minimumHeight=(int)(area.Height*.18);maximumHeight=(int)(area.Height*.30);}
+                else{minimumHeight=(int)(area.Height*.31);maximumHeight=Math.Min(620,(int)(area.Height*.43));}
+                minimumHeight=Math.Max(64,minimumHeight);maximumHeight=Math.Max(minimumHeight+1,maximumHeight);
+                pendingEffects.Enqueue(new EffectSpec{Name=choices[random.Next(choices.Length)],Angle=(float)(random.NextDouble()*360),Height=random.Next(minimumHeight,maximumHeight),CenterX=centerX,CenterY=centerY,StartOffset=random.Next(0,Math.Max(1,area.Height/3)),Delay=random.Next(0,90),Duration=1000+layer*100+random.Next(0,220)});
+            }
+            Show();TopMost=false;TopMost=true;BringToFront();RenderNow(true);
+            EffectSpec[] specifications=pendingEffects.ToArray();pendingEffects.Clear();
+            Array.Sort(specifications,delegate(EffectSpec a,EffectSpec b){return b.CenterY.CompareTo(a.CenterY);});
+            int generation;
+            lock(effectQueueLock){generation=++effectGeneration;effectOutstanding=specifications.Length;}
+            effectRenderTask=Task.Run(delegate{PrepareEffects(specifications,generation);});
+            BuildEffectBatch();
+            UpdateMenu();
+        }
+        private void PrepareEffects(EffectSpec[] specifications,int generation)
+        {
+            try
+            {
+                foreach(EffectSpec spec in specifications)
+                {
+                    while(true)
+                    {
+                        lock(effectQueueLock){if(generation!=effectGeneration)return;if(preparedEffects.Count<5)break;}
+                        Thread.Sleep(3);
+                    }
+                    Bitmap source;if(!effectSources.TryGetValue(spec.Name,out source)){Interlocked.Decrement(ref effectOutstanding);continue;}
+                    Stopwatch measure=Stopwatch.StartNew();Bitmap picture=MakeEffectPicture(source,spec.Height,spec.Angle);
+                    EffectPictureMs+=measure.Elapsed.TotalMilliseconds;
+                    lock(effectQueueLock)
+                    {
+                        if(generation==effectGeneration)preparedEffects.Enqueue(new PreparedEffect{Spec=spec,Picture=picture});
+                        else{picture.Dispose();return;}
+                    }
+                }
+            }
+            catch(Exception error)
+            {
+                try{Directory.CreateDirectory(Settings.Folder);File.AppendAllText(Path.Combine(Settings.Folder,"error.log"),DateTime.Now.ToString("s")+" full-screen image preparation: "+error+Environment.NewLine);}catch{}
+            }
+        }
+        private void BuildEffectBatch()
+        {
+            if(!screenEffectActive)return;
+            PreparedEffect prepared=null;
+            lock(effectQueueLock){if(preparedEffects.Count>0){prepared=preparedEffects.Dequeue();effectOutstanding--;}}
+            if(prepared==null)return;
+            EffectSpec spec=prepared.Spec;Bitmap picture=prepared.Picture;Stopwatch measure=Stopwatch.StartNew();
+            Point target=new Point(spec.CenterX-picture.Width/2,spec.CenterY-picture.Height/2);
+            EffectWindow effect=new EffectWindow(picture,target,effectArea.Top-picture.Height-spec.StartOffset,Now+spec.Delay/1000.0,spec.Duration,spec.Height<effectArea.Height*.18);
+            effectWindows.Add(effect);fallingEffects.Add(effect);effect.Show();
+            EffectShowMs+=measure.Elapsed.TotalMilliseconds;EffectMaxShowMs=Math.Max(EffectMaxShowMs,measure.Elapsed.TotalMilliseconds);
+            if(effectWindows.Count%4==0||PendingEffectCount==0)
+                foreach(EffectWindow window in effectWindows)if(window.SmallForeground)window.BringToFront();
+            BringToFront();
+        }
+        private void AdvanceEffects()
+        {
+            Stopwatch measure=Stopwatch.StartNew();
+            double now=Now;
+            for(int i=fallingEffects.Count-1;i>=0;i--)
+                if(fallingEffects[i].Advance(now))fallingEffects.RemoveAt(i);
+            EffectMoveMs+=measure.Elapsed.TotalMilliseconds;EffectMaxMoveMs=Math.Max(EffectMaxMoveMs,measure.Elapsed.TotalMilliseconds);
+        }
+        private static Bitmap MakeEffectPicture(Bitmap source,int height,float angle)
+        {
+            float scale=height/(float)source.Height;float width=source.Width*scale;float radians=(float)(Math.PI*angle/180.0);
+            int side=(int)Math.Ceiling(Math.Abs(width*(float)Math.Cos(radians))+Math.Abs(height*(float)Math.Sin(radians)))+4;
+            int side2=(int)Math.Ceiling(Math.Abs(width*(float)Math.Sin(radians))+Math.Abs(height*(float)Math.Cos(radians)))+4;
+            Bitmap result=new Bitmap(side,side2,PixelFormat.Format32bppPArgb);
+            using(Graphics g=Graphics.FromImage(result)){g.Clear(Color.Transparent);g.InterpolationMode=InterpolationMode.HighQualityBilinear;g.TranslateTransform(side/2f,side2/2f);g.RotateTransform(angle);g.DrawImage(source,new RectangleF(-width/2,-height/2,width,height));}
+            return result;
+        }
+        private void SettleScreenEffect()
+        {
+            foreach(EffectWindow window in effectWindows)window.TopMost=false;
+            TopMost=false;
+            BringToFront();
+            effectSettled=true;
+            UpdateMenu();
+        }
+        internal void StopScreenEffect()
+        {
+            pendingEffects.Clear();fallingEffects.Clear();
+            lock(effectQueueLock)
+            {
+                effectGeneration++;effectOutstanding=0;
+                while(preparedEffects.Count>0)preparedEffects.Dequeue().Picture.Dispose();
+            }
+            if(effectRenderTask!=null){try{effectRenderTask.Wait(1000);}catch{}effectRenderTask=null;}
+            foreach(EffectWindow window in effectWindows)window.Dispose();effectWindows.Clear();effectSettled=false;
+            if(screenEffectActive)
+            {
+                settings.Scale=scaleBeforeEffect;ClientSize=SizeFor(settings.Scale);Location=locationBeforeEffect;TopMost=topBeforeEffect;screenEffectActive=false;KeepVisible();
+            }
+            if(!HiddenForFullscreen&&!IsDisposed){Show();RenderNow(true);}UpdateMenu();
+        }
+        private Bitmap RenderEmote(Emote emote,int index)
+        {
+            Size size=SizeFor(emote);Bitmap result=new Bitmap(size.Width,size.Height,PixelFormat.Format32bppPArgb);
+            double seconds=Now-emoteStart,phase=seconds*2.2;float bob=emote.FrameCount>1?0:(float)(Math.Sin(phase)*4*settings.Scale/100.0),breath=emote.FrameCount>1?1f:1f+(float)(Math.Sin(phase)*.014);
+            using(Graphics g=Graphics.FromImage(result))
+            {
+                g.Clear(Color.Transparent);g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.PixelOffsetMode=PixelOffsetMode.HighQuality;
+                g.TranslateTransform(size.Width*.5f,size.Height*.5f+bob);g.ScaleTransform(breath,breath);
+                g.DrawImage(emote.Frame(index),new Rectangle(-size.Width/2,-size.Height/2,size.Width,size.Height));
+            }return result;
+        }
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
@@ -542,10 +886,10 @@ namespace NaiwaDesktop
             else if(Motion.Poke(Now,e.X*100.0/settings.Scale,e.Y*100.0/settings.Scale))RenderNow(true);
         }
         protected override void OnMouseCaptureChanged(EventArgs e){base.OnMouseCaptureChanged(e);if(!Capture&&gesture.Pressed){Motion.EndDrag(Now);gesture.Cancel();KeepVisible();RenderNow(true);Save();}}
-        protected override void OnFormClosing(FormClosingEventArgs e){Save();timer.Stop();if(sound!=null)sound.Stop();base.OnFormClosing(e);}
+        protected override void OnFormClosing(FormClosingEventArgs e){Save();timer.Stop();StopScreenEffect();if(sound!=null)sound.Stop();base.OnFormClosing(e);}
         protected override void Dispose(bool disposingNow)
         {
-            if(disposingNow&&!disposing){disposing=true;timer.Dispose();if(tray!=null){tray.Visible=false;tray.Dispose();}if(menu!=null){Font f=menu.Font;menu.Dispose();f.Dispose();}if(sound!=null){sound.Stop();sound.Dispose();}surface.Dispose();if(petIcon!=null)petIcon.Dispose();}
+            if(disposingNow&&!disposing){disposing=true;foreach(EffectWindow window in effectWindows)window.Dispose();effectWindows.Clear();timer.Dispose();if(tray!=null){tray.Visible=false;tray.Dispose();}if(menu!=null){Font f=menu.Font;menu.Dispose();f.Dispose();}if(sound!=null){sound.Stop();sound.Dispose();}foreach(Bitmap source in effectSources.Values)source.Dispose();foreach(Emote emote in emotes.Values)emote.Dispose();surface.Dispose();if(petIcon!=null)petIcon.Dispose();}
             base.Dispose(disposingNow);
         }
     }
@@ -564,6 +908,12 @@ namespace NaiwaDesktop
             {
                 using(Assets a=new Assets(AppDomain.CurrentDomain.BaseDirectory))
                 {
+                    using(Emote heart=new Emote("heart",Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"emotes","heart.png")))
+                    {Check(heart.FrameCount==1&&heart.Width>0&&heart.Height>0&&heart.Duration==12,"heart emote loads",log);}
+                    string[] staticEmotes={"emo_idle","emo_wipe","smoke","umbrella","coffee","sad"};
+                    foreach(string name in staticEmotes)using(Emote emote=new Emote(name,Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"emotes",name+".png")))
+                    {Check(emote.FrameCount==1&&emote.Width>0&&emote.Height>0&&emote.Duration==12,name+" emote loads",log);}
+                    Check(EffectWindow.FallY(-300,700,0,1.2)==-300&&EffectWindow.FallY(-300,700,1.2,1.2)==700&&EffectWindow.FallY(-300,700,.6,1.2)<700,"gravity fall reaches its pile target",log);
                     Check(a.Count==422&&Math.Abs(a.Fps-30)<.01,"original 422-frame clip at 30 fps",log);
                     Check(a.Eye(0).GetPixel(0,0).A==0&&a.Eye(1).GetPixel(0,0).A==0,"transparent idle and hover backgrounds",log);
                     int differences=0,outsideEyes=0;
@@ -613,7 +963,7 @@ namespace NaiwaDesktop
                         form.Show();Application.DoEvents();form.RenderNow(true);
                         Check(Native.IsWindowVisible(form.Handle),"native pet window is visible",log);
                         int style=Native.GetWindowLong(form.Handle,-20);Check((style&0x80000)!=0&&(style&0x80)!=0&&(style&0x08000000)!=0,"alpha transparency, no taskbar entry, no focus stealing",log);
-                        form.SetSize(65);Check(form.Width==a.Width*65/100,"small size renders",log);form.SetSize(110);Check(form.Width==a.Width*110/100,"large size renders",log);form.SetSize(85);
+                        form.SetSize(65);Check(form.Width==a.Width*65/100,"small size renders",log);form.SetSize(110);Check(form.Width==a.Width*110/100,"large size renders",log);form.SetSize(150);Check(form.Width==a.Width*150/100,"pro size renders",log);form.SetSize(200);Check(form.Width==a.Width*200/100,"max size renders",log);form.SetSize(300);Check(form.Width==a.Width*300/100,"pro max size renders",log);form.SetSize(600);Check(form.Width==a.Width*600/100,"600 percent size renders",log);form.SetSize(700);Check(form.Width==a.Width*700/100,"700 percent size renders",log);form.SetSize(85);
                         form.Location=new Point(-50000,-50000);form.SetSize(85);Check(Screen.FromRectangle(form.Bounds).WorkingArea.IntersectsWith(form.Bounds),"lost window position recovers",log);
                         form.SetSound(true);Check(form.SoundEnabled,"original audio switch can be enabled",log);form.SetSound(false);Check(!form.SoundEnabled,"sound switch can be muted",log);
                         IntPtr mousePoint=(IntPtr)((160<<16)|120);
@@ -659,6 +1009,23 @@ namespace NaiwaDesktop
                         int stable=Native.GetGuiResources(Process.GetCurrentProcess().Handle,0);
                         log.Add("METRIC: repeat-playback GDI delta "+(stable-after));
                         Check(stable-after<10,"repeat playback does not leak GDI handles",log);Check(a.CacheCount<=12,"decoded frame cache stays bounded",log);
+                        form.Motion.Stop();form.RenderNow(true);Stopwatch pileClock=Stopwatch.StartNew();form.StartScreenEffect(false);
+                        while(!form.EffectComplete&&pileClock.Elapsed.TotalSeconds<12){Application.DoEvents();form.Tick();Thread.Sleep(12);}
+                        log.Add("METRIC: full-screen pile completion "+pileClock.Elapsed.TotalSeconds.ToString("F2")+" s; windows "+form.EffectCount+"; pending "+form.PendingEffectCount);
+                        log.Add("METRIC: picture "+form.EffectPictureMs.ToString("F0")+" ms; window show "+form.EffectShowMs.ToString("F0")+" ms; movement "+form.EffectMoveMs.ToString("F0")+" ms");
+                        log.Add("METRIC: max show "+form.EffectMaxShowMs.ToString("F1")+" ms; max movement frame "+form.EffectMaxMoveMs.ToString("F1")+" ms");
+                        Check(form.EffectBottomFirst,"bottom row is generated before upper rows",log);
+                        Check(form.EffectComplete,"all falling pets reach the pile",log);
+                        Rectangle pileArea=Screen.FromRectangle(form.Bounds).Bounds;
+                        using(Bitmap screenshot=new Bitmap(pileArea.Width,pileArea.Height))
+                        {
+                            using(Graphics capture=Graphics.FromImage(screenshot))capture.CopyFromScreen(pileArea.Location,Point.Empty,pileArea.Size);
+                            screenshot.Save(Path.Combine(folder,"full-screen-pile.png"),ImageFormat.Png);
+                        }
+                        form.Tick();
+                        Check(form.EffectSettled&&!form.TopMost&&!form.EffectWindowsTopMost,"finished pile lets other windows come forward",log);
+                        Check(form.Left>=pileArea.Left&&form.Right<=pileArea.Right&&form.Top>=pileArea.Top&&form.Bottom<=pileArea.Bottom,"control pet remains on the selected screen",log);
+                        form.StopScreenEffect();
                         form.Motion.Stop();form.RenderNow(true);form.Close();Check(form.IsDisposed,"window closes cleanly",log);
                     }
                     using(Icon icon=Renderer.CreateIcon(a.Eye(0)))using(FileStream f=File.Create(Path.Combine(folder,"naiwa.ico")))icon.Save(f);

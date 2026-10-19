@@ -1,0 +1,16 @@
+# Local test captures and build scratch files
+test-results*/
+源码/temp/
+giant-size-probe.txt
+*.zip
+
+# Keep only the current program in the publishable tree.
+奶蛙桌宠.*.exe
+
+# Retired experiments and reference GIFs are kept locally, not shipped.
+emotes/emo3d_frames/
+emotes/emo3d.png
+emotes/emo.gif
+emotes/completed.gif
+emotes/greeting.gif
+emotes/waiting.gif
