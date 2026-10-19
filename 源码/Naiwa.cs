@@ -618,7 +618,6 @@ namespace NaiwaDesktop
                 if(PendingEffectCount>0)BuildEffectBatch();
             }
             Point p=PointToClient(Cursor.Position);bool over=!menuOpen&&surface.Hit(p.X,p.Y);
-            if(activeEmote!=null&&!holdEmote&&Now-emoteStart>=activeEmote.Duration)StopEmote(false);
             bool wasPlaying=Motion.Playing;Motion.Update(Now,over,assets.Duration,assets.BlinkCount/assets.BlinkFps);
             if(wasPlaying&&!Motion.Playing&&sound!=null)sound.Stop();
             RenderNow(false);
@@ -721,7 +720,7 @@ namespace NaiwaDesktop
         private void PlayEmote(string name)
         {
             Emote emote;if(HiddenForFullscreen||!emotes.TryGetValue(name,out emote))return;
-            if(sound!=null)sound.Stop();Motion.Suspend(Now);activeEmote=emote;emoteStart=Now;
+            if(sound!=null)sound.Stop();Motion.Suspend(Now);holdEmote=false;activeEmote=emote;emoteStart=Now;
             int center=Left+Width/2,bottom=Top+Height;ClientSize=SizeFor(emote);Location=new Point(center-Width/2,bottom-Height);KeepVisible();RenderNow(true);
         }
         private void StopEmote(bool render)
