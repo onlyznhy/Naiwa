@@ -564,6 +564,8 @@ namespace NaiwaDesktop
             holdEmoteItem=new ToolStripMenuItem("停留当前动作",null,delegate{holdEmote=!holdEmote;UpdateMenu();});result.Items.Add(holdEmoteItem);
             stopEmoteItem=new ToolStripMenuItem("结束表情动作",null,delegate{holdEmote=false;StopEmote(true);UpdateMenu();});result.Items.Add(stopEmoteItem);
             result.Items.Add(new ToolStripSeparator());
+            result.Items.Add("满屏：原版动作旋转铺满",null,delegate{StartScreenEffectAction("original");});
+            result.Items.Add("满屏：原版大笑旋转铺满",null,delegate{StartScreenEffectAction("laugh");});
             result.Items.Add("满屏：同一动作旋转铺满",null,delegate{StartScreenEffect(false);});
             result.Items.Add("满屏：不同动作旋转铺满",null,delegate{StartScreenEffect(true);});
             stopEffectItem=new ToolStripMenuItem("关闭满屏效果",null,delegate{StopScreenEffect();});result.Items.Add(stopEffectItem);
@@ -675,8 +677,9 @@ namespace NaiwaDesktop
         }
         internal void SetSize(int scale)
         {
+            Screen screen=Screen.FromRectangle(Bounds);Rectangle area=screen.WorkingArea;
             int center=Left+Width/2,bottom=Top+Height;settings.Scale=Math.Max(50,Math.Min(700,scale));ClientSize=activeEmote==null?SizeFor(settings.Scale):SizeFor(activeEmote);
-            Location=new Point(center-Width/2,bottom-Height);KeepVisible();RenderNow(true);Save();UpdateMenu();
+            Location=new Point(center-Width/2,bottom-Height);KeepVisibleAfterResize(area);RenderNow(true);Save();UpdateMenu();
         }
         internal void Home()
         {
@@ -685,6 +688,13 @@ namespace NaiwaDesktop
         }
         internal static Point Clamp(Point p,Size size,Rectangle area,int allowance)
         {return new Point(Math.Max(area.Left,Math.Min(p.X,area.Right-size.Width)),Math.Max(area.Top,Math.Min(p.Y,area.Bottom-size.Height+allowance)));}
+        private void KeepVisibleAfterResize(Rectangle area)
+        {
+            int visibleWidth=Math.Min(Width,Math.Min(area.Width,Math.Max(120,(int)Math.Ceiling(Width*.8))));
+            int visibleHeight=Math.Min(Height,Math.Min(area.Height,Math.Max(120,(int)Math.Ceiling(Height*.8))));
+            Left=Math.Max(area.Left+visibleWidth-Width,Math.Min(Left,area.Right-visibleWidth));
+            Top=Math.Max(area.Top+visibleHeight-Height,Math.Min(Top,area.Bottom-visibleHeight));
+        }
         private void KeepVisible()
         {
             // Every size may be dragged beyond any edge.  Leave a small visible grip so the pet can always be pulled back.
@@ -697,6 +707,8 @@ namespace NaiwaDesktop
             string emoteFolder=Path.Combine(folder,"emotes");
             string[] names={"heart","emo_idle","emo_wipe","smoke","umbrella","coffee","sad"};
             foreach(string name in names)try{string path=Path.Combine(emoteFolder,name+".gif");if(!File.Exists(path))path=Path.Combine(emoteFolder,name+".png");if(File.Exists(path)){Emote emote=new Emote(name,path);emotes.Add(name,emote);effectSources.Add(name,MakeEffectSource(emote.Frame(0)));}}catch{}
+            effectSources.Add("original",MakeEffectSource(assets.Eye(0)));
+            effectSources.Add("laugh",MakeEffectSource(assets.Frame(Math.Min(assets.Count-1,(int)(assets.Fps*1.2)))));
         }
         private static Bitmap MakeEffectSource(Bitmap source)
         {
@@ -719,11 +731,17 @@ namespace NaiwaDesktop
         }
         internal void StartScreenEffect(bool mixed)
         {
-            if(HiddenForFullscreen)return;string currentAction=activeEmote==null?"emo_idle":activeEmote.Name;StopScreenEffect();StopEmote(false);
+            string currentAction=activeEmote!=null?activeEmote.Name:Motion.Playing?"laugh":"original";
+            StartScreenEffectCore(mixed?null:currentAction,mixed);
+        }
+        private void StartScreenEffectAction(string action){StartScreenEffectCore(action,false);}
+        private void StartScreenEffectCore(string action,bool mixed)
+        {
+            if(HiddenForFullscreen)return;StopScreenEffect();StopEmote(false);
             screenEffectActive=true;effectSettled=false;scaleBeforeEffect=settings.Scale;locationBeforeEffect=Location;topBeforeEffect=TopMost;
             settings.Scale=85;ClientSize=SizeFor(settings.Scale);Home();TopMost=true;RenderNow(true);
             Rectangle area=Screen.FromPoint(Cursor.Position).Bounds;effectArea=area;
-            string[] choices=mixed?new string[]{"heart","emo_idle","emo_wipe","smoke","umbrella","coffee","sad"}:new string[]{currentAction};
+            string[] choices=mixed?new string[]{"original","laugh","heart","emo_idle","emo_wipe","smoke","umbrella","coffee","sad"}:new string[]{action};
             // Build only lightweight placement specifications here; image rotation is batched after the first pets begin falling.
             Random random=new Random(unchecked(Environment.TickCount*397^Guid.NewGuid().GetHashCode()));
             int columns=8,rows=7,baseCount=columns*rows,extraCount=40;
