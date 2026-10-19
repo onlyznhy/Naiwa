@@ -2,6 +2,8 @@
 
 基础版来自 [yugh6 的 Naiwa 项目](https://github.com/yugh6/Naiwa)，感谢原作者 yugh6 分享奶蛙桌宠。我们在基础版上进行了二次创作，加入更多大小、表情动作与满屏效果。奶蛙可以眨眼、跟随鼠标转眼、戳肚子、拖动和捧腹大笑。
 
+为改善放大后的清晰度，程序中的原始待机、转眼、眨眼和大笑帧已统一做 2× AI 超分辨率增强，画布从 288 × 368 提升到 576 × 736。处理使用面向动画视频帧的 [Real-ESRGAN AnimeVideoV3](https://github.com/xinntao/Real-ESRGAN)，细节由模型补全，和原始素材可能略有差异。
+
 ## 下载与安装
 
 1. 在 GitHub 页面点 **Code → Download ZIP**，下载后先完整解压。若以后提供 Releases，也可下载其中的完整压缩包。

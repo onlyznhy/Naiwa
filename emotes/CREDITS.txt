@@ -1,3 +1,4 @@
 heart.png, emo_idle.png, emo_wipe.png, emo3d.png, smoke.png, umbrella.png, coffee.png, and sad.png: generated as transparent desktop-pet adaptations from the user's provided reference images.
 emo_idle.png and emo_wipe.png are the two separate EMO actions currently shown in the menu.  The older emo3d_frames sequence is retained as an archive and is not loaded.
 emo.gif: original source provided by the user: https://mp.weixin.qq.com/s/YaX56qSlTF88wjIQPABOpA
+The original look, blink, and laugh animation frames in 素材.nwp were upscaled 2x with Real-ESRGAN AnimeVideoV3 (https://github.com/xinntao/Real-ESRGAN), an animation-oriented super-resolution model. The enhanced details are model-generated and may differ slightly from the source frames.
