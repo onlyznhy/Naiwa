@@ -382,13 +382,14 @@ namespace NaiwaDesktop
             BitmapData locked=original.LockBits(new Rectangle(0,0,w,h),ImageLockMode.ReadOnly,PixelFormat.Format32bppPArgb);
             try{Marshal.Copy(locked.Scan0,source,0,source.Length);}finally{original.UnlockBits(locked);}
             byte[] result=(byte[])source.Clone();
-            const double radiusX=96,radiusY=72;
-            int left=Math.Max(0,(int)(cx-radiusX)),right=Math.Min(w-2,(int)(cx+radiusX)),top=Math.Max(105,(int)(cy-radiusY)),bottom=Math.Min(Math.Min(300,h-2),(int)(cy+radiusY));
+            double scaleX=w/288.0,scaleY=h/368.0;cx*=scaleX;cy*=scaleY;
+            double radiusX=96*scaleX,radiusY=72*scaleY,bellyTop=105*scaleY,bellyBottom=300*scaleY;
+            int left=Math.Max(0,(int)(cx-radiusX)),right=Math.Min(w-2,(int)(cx+radiusX)),top=Math.Max((int)bellyTop,(int)(cy-radiusY)),bottom=Math.Min(Math.Min((int)bellyBottom,h-2),(int)(cy+radiusY));
             for(int y=top;y<=bottom;y++)for(int x=left;x<=right;x++)
             {
                 double dx=x-cx,dy=y-cy,r=dx*dx/(radiusX*radiusX)+dy*dy/(radiusY*radiusY);if(r>=1)continue;
                 // Include the belly outline, fading out before the face and feet.
-                double neck=Math.Min(1,(y-105)/30.0),legs=Math.Min(1,(300-y)/20.0);
+                double neck=Math.Min(1,(y-bellyTop)/(30*scaleY)),legs=Math.Min(1,(bellyBottom-y)/(20*scaleY));
                 double fade=neck*neck*(3-2*neck)*legs*legs*(3-2*legs);
                 double fall=(1-r)*(1-r)*amount*fade;
                 double sx=Math.Max(0,Math.Min(w-1.001,x+dx*fall)),sy=Math.Max(0,Math.Min(h-1.001,y+dy*fall*.6));
@@ -901,7 +902,7 @@ namespace NaiwaDesktop
             if(moved){Motion.EndDrag(Now);KeepVisible();RenderNow(true);Save();}
             else if(twice)Laugh();
             else if(Motion.Resting){Motion.Stand(Now);RenderNow(true);}
-            else if(Motion.Poke(Now,e.X*100.0/settings.Scale,e.Y*100.0/settings.Scale))RenderNow(true);
+            else if(Motion.Poke(Now,e.X*100.0/settings.Scale*288.0/assets.Width,e.Y*100.0/settings.Scale*368.0/assets.Height))RenderNow(true);
         }
         protected override void OnMouseCaptureChanged(EventArgs e){base.OnMouseCaptureChanged(e);if(!Capture&&gesture.Pressed){Motion.EndDrag(Now);gesture.Cancel();KeepVisible();RenderNow(true);Save();}}
         protected override void OnFormClosing(FormClosingEventArgs e){Save();timer.Stop();StopScreenEffect();if(sound!=null)sound.Stop();base.OnFormClosing(e);}
