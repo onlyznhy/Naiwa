@@ -687,6 +687,7 @@ namespace NaiwaDesktop
             Rectangle area=Screen.FromPoint(Cursor.Position).WorkingArea;
             Location=new Point(area.Right-Width-24,area.Bottom-Height+(int)(12*settings.Scale/100.0));KeepVisible();
         }
+        internal static double ViewToLogical(int coordinate,int scale){return coordinate*100.0/scale;}
         internal static Point Clamp(Point p,Size size,Rectangle area,int allowance)
         {return new Point(Math.Max(area.Left,Math.Min(p.X,area.Right-size.Width)),Math.Max(area.Top,Math.Min(p.Y,area.Bottom-size.Height+allowance)));}
         private void KeepVisibleAfterResize(Rectangle area)
@@ -902,7 +903,7 @@ namespace NaiwaDesktop
             if(moved){Motion.EndDrag(Now);KeepVisible();RenderNow(true);Save();}
             else if(twice)Laugh();
             else if(Motion.Resting){Motion.Stand(Now);RenderNow(true);}
-            else if(Motion.Poke(Now,e.X*100.0/settings.Scale*288.0/assets.Width,e.Y*100.0/settings.Scale*368.0/assets.Height))RenderNow(true);
+            else if(Motion.Poke(Now,ViewToLogical(e.X,settings.Scale),ViewToLogical(e.Y,settings.Scale)))RenderNow(true);
         }
         protected override void OnMouseCaptureChanged(EventArgs e){base.OnMouseCaptureChanged(e);if(!Capture&&gesture.Pressed){Motion.EndDrag(Now);gesture.Cancel();KeepVisible();RenderNow(true);Save();}}
         protected override void OnFormClosing(FormClosingEventArgs e){Save();timer.Stop();StopScreenEffect();if(sound!=null)sound.Stop();base.OnFormClosing(e);}
@@ -935,6 +936,7 @@ namespace NaiwaDesktop
                     Check(EffectWindow.FallY(-300,700,0,1.2)==-300&&EffectWindow.FallY(-300,700,1.2,1.2)==700&&EffectWindow.FallY(-300,700,.6,1.2)<700,"gravity fall reaches its pile target",log);
                     Check(a.Count==422&&Math.Abs(a.Fps-30)<.01,"original 422-frame clip at 30 fps",log);
                     Check(a.Eye(0).GetPixel(0,0).A==0&&a.Eye(1).GetPixel(0,0).A==0,"transparent idle and hover backgrounds",log);
+                    Check(Motion.InBelly(PetWindow.ViewToLogical(120,85),PetWindow.ViewToLogical(160,85)),"belly click maps correctly at original-sized scale",log);
                     int differences=0,outsideEyes=0;
                     for(int y=0;y<a.Height;y++)for(int x=0;x<a.Width;x++)if(a.Eye(0).GetPixel(x,y)!=a.Eye(1).GetPixel(x,y)){differences++;if(y>92)outsideEyes++;}
                     Check(differences>10&&outsideEyes==0,"hover changes only eye area, body is identical",log);
