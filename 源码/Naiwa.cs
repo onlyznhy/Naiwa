@@ -346,13 +346,14 @@ namespace NaiwaDesktop
         {
             using(Bitmap small=new Bitmap(64,64,PixelFormat.Format32bppArgb))
             {
-                using(Graphics g=Graphics.FromImage(small)){g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.DrawImage(image,new Rectangle(6,0,52,64),new Rectangle(60,40,175,225),GraphicsUnit.Pixel);}
+                Rectangle source=new Rectangle(60*image.Width/288,40*image.Height/368,175*image.Width/288,225*image.Height/368);
+                using(Graphics g=Graphics.FromImage(small)){g.InterpolationMode=InterpolationMode.HighQualityBicubic;g.DrawImage(image,new Rectangle(6,0,52,64),source,GraphicsUnit.Pixel);}
                 IntPtr h=small.GetHicon();try{using(Icon borrowed=Icon.FromHandle(h))return (Icon)borrowed.Clone();}finally{Native.DestroyIcon(h);}
             }
         }
         internal static Bitmap Render(Assets assets,Motion m,int scale)
         {
-            int w=assets.Width*scale/100,h=assets.Height*scale/100;
+            int w=288*scale/100,h=368*scale/100;
             Bitmap canvas=new Bitmap(w,h,PixelFormat.Format32bppPArgb);
             using(Graphics g=Graphics.FromImage(canvas))
             {
@@ -668,11 +669,11 @@ namespace NaiwaDesktop
                 Motion.Suspend(Now);timer.Interval=16;Show();RenderNow(true);
             }
         }
-        private void ReturnHome(){Home();if(!testing)CheckFullscreen(true);if(!HiddenForFullscreen){Show();RenderNow(true);}Save();}
-        private Size SizeFor(int scale){return new Size(assets.Width*scale/100,assets.Height*scale/100);}
+        private void ReturnHome(){Home();if(!testing)CheckFullscreen(true);if(!HiddenForFullscreen){Show();TopMost=true;BringToFront();TopMost=settings.OnTop;RenderNow(true);}Save();}
+        private Size SizeFor(int scale){return new Size(288*scale/100,368*scale/100);}
         private Size SizeFor(Emote emote)
         {
-            int height=assets.Height*settings.Scale/100;
+            int height=368*settings.Scale/100;
             return new Size(Math.Max(1,emote.Width*height/emote.Height),height);
         }
         internal void SetSize(int scale)
@@ -981,7 +982,7 @@ namespace NaiwaDesktop
                         form.Show();Application.DoEvents();form.RenderNow(true);
                         Check(Native.IsWindowVisible(form.Handle),"native pet window is visible",log);
                         int style=Native.GetWindowLong(form.Handle,-20);Check((style&0x80000)!=0&&(style&0x80)!=0&&(style&0x08000000)!=0,"alpha transparency, no taskbar entry, no focus stealing",log);
-                        form.SetSize(65);Check(form.Width==a.Width*65/100,"small size renders",log);form.SetSize(110);Check(form.Width==a.Width*110/100,"large size renders",log);form.SetSize(150);Check(form.Width==a.Width*150/100,"pro size renders",log);form.SetSize(200);Check(form.Width==a.Width*200/100,"max size renders",log);form.SetSize(300);Check(form.Width==a.Width*300/100,"pro max size renders",log);form.SetSize(600);Check(form.Width==a.Width*600/100,"600 percent size renders",log);form.SetSize(700);Check(form.Width==a.Width*700/100,"700 percent size renders",log);form.SetSize(85);
+                        form.SetSize(65);Check(form.Width==288*65/100&&form.Height==368*65/100,"small size matches original scale",log);form.SetSize(110);Check(form.Width==288*110/100,"large size matches original scale",log);form.SetSize(150);Check(form.Width==288*150/100,"pro size matches original scale",log);form.SetSize(200);Check(form.Width==288*200/100,"max size matches original scale",log);form.SetSize(300);Check(form.Width==288*300/100,"pro max size matches original scale",log);form.SetSize(600);Check(form.Width==288*600/100,"600 percent size matches original scale",log);form.SetSize(700);Check(form.Width==288*700/100,"700 percent size matches original scale",log);form.SetSize(85);
                         form.Location=new Point(-50000,-50000);form.SetSize(85);Check(Screen.FromRectangle(form.Bounds).WorkingArea.IntersectsWith(form.Bounds),"lost window position recovers",log);
                         form.SetSound(true);Check(form.SoundEnabled,"original audio switch can be enabled",log);form.SetSound(false);Check(!form.SoundEnabled,"sound switch can be muted",log);
                         IntPtr mousePoint=(IntPtr)((160<<16)|120);
